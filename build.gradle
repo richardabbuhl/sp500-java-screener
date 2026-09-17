@@ -19,7 +19,9 @@ repositories {
 
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+	implementation 'com.fasterxml.jackson.core:jackson-databind'
 	implementation 'org.ta4j:ta4j-core:0.25.0'
+	implementation 'org.jsoup:jsoup:1.18.3'
 	compileOnly 'org.projectlombok:lombok'
 	developmentOnly 'org.springframework.boot:spring-boot-devtools'
 	annotationProcessor 'org.projectlombok:lombok'
