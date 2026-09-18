@@ -1,35 +1,42 @@
 package com.sp500.demo.service;
 
 import com.sp500.demo.model.StockQuote;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
+import org.ta4j.core.BarSeries;
+import org.ta4j.core.BaseBar;
+import org.ta4j.core.BaseBarSeriesBuilder;
+import org.ta4j.core.num.DoubleNum;
 
 @Service
 public class YahooFinanceService {
 
-	private static final Pattern TARGET_PRICE = Pattern.compile("\"targetMeanPrice\"\\s*:\\s*\\{\\s*\"raw\"\\s*:\\s*([0-9.]+)");
-	private static final Pattern CURRENT_PRICE = Pattern.compile("\"regularMarketPrice\"\\s*:\\s*\\{\\s*\"raw\"\\s*:\\s*([0-9.]+)");
 	private final RestClient client = RestClient.builder().build();
 
 	public StockQuote getQuote(String symbol) {
 		String normalized = normalizeSymbol(symbol);
-		String encoded = URLEncoder.encode(normalized, StandardCharsets.UTF_8);
-		String page = client.get().uri("https://finance.yahoo.com/quote/" + encoded + "/")
-				.retrieve().body(String.class);
-		if (page == null || page.isBlank()) {
-			throw new IllegalStateException("Yahoo Finance returned an empty response for " + normalized);
+		List<PricePoint> points = history(normalized);
+		if (points.size() < 2) {
+			throw new IllegalStateException("Not enough history returned for " + normalized);
 		}
-		Matcher priceMatcher = CURRENT_PRICE.matcher(page);
-		if (!priceMatcher.find()) {
-			throw new IllegalStateException("Yahoo Finance response did not contain a current price for " + normalized);
+		BarSeries series = new BaseBarSeriesBuilder().withName(normalized).build();
+		for (PricePoint point : points) {
+			var value = DoubleNum.valueOf(point.close());
+			series.addBar(new BaseBar(Duration.ofDays(1), point.time(), point.time().plus(Duration.ofDays(1)),
+					value, value, value, value, DoubleNum.valueOf(0), DoubleNum.valueOf(0), 0));
 		}
-		Matcher targetMatcher = TARGET_PRICE.matcher(page);
-		Double target = targetMatcher.find() ? Double.valueOf(targetMatcher.group(1)) : null;
-		return new StockQuote(normalized, Double.valueOf(priceMatcher.group(1)), target);
+		double currentPrice = series.getLastBar().getClosePrice().doubleValue();
+		double firstClose = series.getFirstBar().getClosePrice().doubleValue();
+		double annualizedReturn = Math.pow(currentPrice / firstClose, 252.0 / Math.max(1, series.getBarCount() - 1)) - 1;
+		double targetPrice = currentPrice * (1 + annualizedReturn);
+		return new StockQuote(normalized, currentPrice, targetPrice);
 	}
 
 	private String normalizeSymbol(String symbol) {
@@ -37,5 +44,62 @@ public class YahooFinanceService {
 			throw new IllegalArgumentException("symbol must contain 1-10 letters, digits, dots, or hyphens");
 		}
 		return symbol.toUpperCase();
+	}
+
+	private List<PricePoint> history(String symbol) {
+		long end = Instant.now().getEpochSecond();
+		long start = Instant.now().minus(400, ChronoUnit.DAYS).getEpochSecond();
+		String body = fetchHistoryWithRetry(symbol, start, end);
+		if (body == null || body.isBlank()) {
+			throw new IllegalStateException("Yahoo history returned an empty response for " + symbol);
+		}
+		try {
+			var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+			var result = mapper.readTree(body).path("chart").path("result").path(0);
+			var timestamps = result.path("timestamp");
+			var closes = result.path("indicators").path("quote").path(0).path("close");
+			List<PricePoint> points = new ArrayList<>();
+			for (int i = 0; i < timestamps.size(); i++) {
+				if (!closes.get(i).isNull()) {
+					points.add(new PricePoint(Instant.ofEpochSecond(timestamps.get(i).asLong()), closes.get(i).asDouble()));
+				}
+			}
+			return points;
+		} catch (Exception exception) {
+			throw new IllegalStateException("Unable to parse Yahoo history for " + symbol, exception);
+		}
+	}
+
+	private String fetchHistoryWithRetry(String symbol, long start, long end) {
+		String uri = "https://query1.finance.yahoo.com/v8/finance/chart/" + symbol + "?period1=" + start + "&period2="
+				+ end + "&interval=1d";
+		HttpClientErrorException.TooManyRequests last429 = null;
+		for (int attempt = 1; attempt <= 4; attempt++) {
+			try {
+				return client.get().uri(uri).retrieve().body(String.class);
+			} catch (HttpClientErrorException.TooManyRequests tooManyRequests) {
+				last429 = tooManyRequests;
+				if (attempt == 4) {
+					break;
+				}
+				sleepBackoff(attempt);
+			}
+		}
+		throw new IllegalStateException("Yahoo API rate-limited symbol " + symbol + " after retries", last429);
+	}
+
+	private void sleepBackoff(int attempt) {
+		long baseDelayMs = 400L * (1L << (attempt - 1));
+		long jitterMs = ThreadLocalRandom.current().nextLong(0, 250);
+		try {
+			Thread.sleep(baseDelayMs + jitterMs);
+		} catch (InterruptedException interruptedException) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException("Interrupted while waiting to retry Yahoo API request",
+					interruptedException);
+		}
+	}
+
+	private record PricePoint(Instant time, double close) {
 	}
 }
