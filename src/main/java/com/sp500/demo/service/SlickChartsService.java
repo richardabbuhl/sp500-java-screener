@@ -2,6 +2,11 @@ package com.sp500.demo.service;
 
 import com.sp500.demo.model.Sp500Stock;
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -16,6 +21,13 @@ import org.springframework.stereotype.Service;
 public class SlickChartsService {
 
 	private static final String URL = "https://www.slickcharts.com/sp500";
+	private static final String USER_AGENT =
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+					+ "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+	private final HttpClient httpClient = HttpClient.newBuilder()
+			.version(HttpClient.Version.HTTP_1_1)
+			.connectTimeout(Duration.ofSeconds(15))
+			.build();
 
 	public List<Sp500Stock> getStocks(Integer topN) {
 		if (topN != null && topN < 1) {
@@ -24,12 +36,25 @@ public class SlickChartsService {
 
 		Document document;
 		try {
-			document = Jsoup.connect(URL)
-					.userAgent("Mozilla/5.0")
-					.timeout(15_000)
-					.get();
+			HttpRequest request = HttpRequest.newBuilder(URI.create(URL))
+					.timeout(Duration.ofSeconds(15))
+					.version(HttpClient.Version.HTTP_1_1)
+					.header("User-Agent", USER_AGENT)
+					.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+					.header("Accept-Language", "en-US,en;q=0.9")
+					.header("Referer", "https://www.google.com/")
+					.GET()
+					.build();
+			HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+			if (response.statusCode() < 200 || response.statusCode() >= 300) {
+				throw new IOException("SlickCharts returned HTTP " + response.statusCode());
+			}
+			document = Jsoup.parse(response.body(), URL);
 		} catch (IOException exception) {
 			throw new IllegalStateException("Unable to retrieve S&P 500 data from SlickCharts", exception);
+		} catch (InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException("Interrupted while retrieving S&P 500 data from SlickCharts", exception);
 		}
 
 		Element table = document.select("table").stream()
