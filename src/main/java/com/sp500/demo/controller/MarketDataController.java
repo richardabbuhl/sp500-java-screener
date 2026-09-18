@@ -33,7 +33,7 @@ public class MarketDataController {
 
 	@GetMapping("/stock/{symbol}")
 	public StockQuote quote(@PathVariable String symbol) {
-		return yahooFinanceService.getQuote(symbol);
+		return yahooFinanceService.getQuoteFromHtml(symbol);
 	}
 
 	@GetMapping("/screener")

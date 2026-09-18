@@ -5,5 +5,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public record StockQuote(
 		@JsonProperty("symbol") String symbol,
 		@JsonProperty("price") double price,
-		@JsonProperty("oneYearTargetPrice") Double oneYearTargetPrice) {
+		@JsonProperty("oneYearTargetPrice") Double oneYearTargetPrice,
+		@JsonProperty("source") String source) {
 }
